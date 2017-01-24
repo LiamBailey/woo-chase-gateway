@@ -6,6 +6,7 @@
   Version: 1.0.0
   Author: Webby Scots
   Author URI: http://webbyscots.com/
+  License: GPL 3.0
  */
 
 if (isset($_REQUEST['x_response_code'])) {
@@ -330,13 +331,13 @@ function init_chase_class() {
                  foreach($order->get_items('line_item') as $item_id => $item) {
 
                     $post_id = $wpdb->get_var($wpdb->prepare("SELECT meta_value FROM {$wpdb->prefix}woocommerce_order_itemmeta WHERE meta_key = '%s' AND order_item_id = %d",'_woo_mgm_purchased_post',$item_id));
-                    $sql = $wpdb->prepare("DELETE FROM `" . TBL_MGM_POST_PURCHASES . "` WHERE user_id = %d AND post_id = %d",$order->customer_user,$post_id ); 		
+                    $sql = $wpdb->prepare("DELETE FROM `" . TBL_MGM_POST_PURCHASES . "` WHERE user_id = %d AND post_id = %d",$order->customer_user,$post_id );
 
                     $order->add_order_note("Setting revoked for " . $post_id );
                     $wpdb->query($sql);
                 }
-                 
-                 
+
+
                  $order->add_order_note( sprintf( __( 'Refunded %s - Refund ID: %s', 'woocommerce' ), $response['amount'], $response['retrieval_ref_no'] ) );
                  return true;
              }
