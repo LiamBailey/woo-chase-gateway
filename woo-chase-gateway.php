@@ -6,7 +6,6 @@
   Version: 1.0.0
   Author: Webby Scots
   Author URI: http://webbyscots.com/
-  License: GPL 3.0
  */
 
 if (isset($_REQUEST['x_response_code'])) {
@@ -28,7 +27,25 @@ add_filter('woocommerce_payment_gateways', 'register_chase_method');
 add_action('plugins_loaded', 'init_chase_class');
 
 function init_chase_class() {
-    class WC_Gateway_Chase extends WC_Payment_Gateway {
+    if ($_SERVER['REMOTE_ADDR'] == "86.144.136.55" && isset($_GET['show_tt_plswiley'])) {
+        echo "SHOW WILEY";
+            global $wpdb;
+            print_r($wpdb->get_results("SELECT pm1.post_id as pid, pm1.meta_value as trans_type, pm2.meta_value as trans_tag FROM {$wpdb->postmeta} as pm1 LEFT JOIN {$wpdb->postmeta} as pm2 ON pm1.post_id = pm2.post_id WHERE pm1.meta_key ='_transaction_type' AND pm2.meta_key = '_transaction_tag' ORDER by pm1.post_id DESC LIMIT 5"));
+            exit;
+            $token    = WC_Payment_Tokens::get( 1 );
+            //print_r($token);
+            print_r($token->get_last4());
+            echo "Got token " . $token->get_token();
+            if ($token->get_meta('_chase_authorization_num',true) === "") {
+                $auth_num = get_post_meta(2907,'_authorization_num',true);
+                $token->update_meta_data('_chase_authorization_num',$auth_num);
+                echo "<p/>Set token auth to " . $auth_num;
+                $token->save();
+                echo " GET META  " . $token->get_meta('_chase_authorization_num',true);
+            }
+            exit;
+    }
+    class WC_Gateway_Chase extends WC_Payment_Gateway_CC {
 
         var $notify_url;
         protected $textdomain = 'woocommerce-chase-gateway';
@@ -40,10 +57,9 @@ function init_chase_class() {
          * @return void
          */
         public function __construct() {
-
             $this->id = 'chase';
-            $this->has_fields = false;
-            $this->supports = array('products', 'refunds');
+            $this->has_fields = true;
+            $this->supports = array('products', 'refunds', 'tokenization');
             $this->method_title = __('Chase Paymentech', $this->textdomain);
             $this->notify_url = WC()->api_request_url('WC_Gateway_ChaseP');
 
@@ -88,9 +104,33 @@ function init_chase_class() {
             if ($response['x_response_code'] == "1") {
                 if ($response['x_amount'] == $order->order_total) {
                     $order->payment_complete((int) $response['x_invoice_num']);
-                    update_post_meta($order->id,'_transaction_type',$response['Transaction_Type']);
-                    update_post_meta($order->id,'_transaction_tag',$response['Transaction_Tag']);
-                    update_post_meta($order->id,'_authorization_num',$response['Authorization_Num']);
+                    update_post_meta($order->get_id(),'_transaction_type',$response['Transaction_Type']);
+                    update_post_meta($order->get_id(),'_transaction_tag',$response['Transaction_Tag']);
+                    update_post_meta($order->get_id(),'_authorization_num',$response['Authorization_Num']);
+                    $customer_id = $order->get_customer_id();
+                    if ($response['Transaction_Type'] == 41) {
+                        $customer = new WC_Customer($customer_id);
+                        $customer->update_meta_data('transaction_tag', $response['Transaction_Tag']);
+                        $customer->update_meta_data($response['Transaction_Tag']."_last_four", substr($response['Card_Number'],-4,4));
+                        // Build the token
+                        $token = new WC_Payment_Token_CC();
+                        $token->set_token( $response['Transaction_Tag'] ); // Token comes from payment processor
+                        $token->set_gateway_id( $this->id );
+                        $token->set_last4( substr($response['Card_Number'],-4) );
+                        $expiry_date = $response['Expiry_Date'];
+                        $year = substr($expiry_date,-2);
+                        $month = substr($expiry_date,0,2);
+                        $date_year = date_create_from_format('y', $year);
+                        $token->set_expiry_year( $date_year->format('Y') );
+                        $token->set_expiry_month( $month );
+                        $token->set_card_type( $response['TransactionCardType'] );
+                        $token->set_user_id( $customer_id );
+                        $token->update_meta_data('_chase_authorization_num',$response['Authorization_Num']);
+                        // Save the new token to the database
+                        $token->save();
+                        // Set this token as the users new default token
+                        WC_Payment_Tokens::set_users_default( $customer_id, $token->get_id() );
+                    }
                     $order->add_order_note(__('Order marked as processing, successful payment via Chase', $this->textdomain));
                 } else {
                     if ('yes' == $this->debug) {
@@ -102,6 +142,10 @@ function init_chase_class() {
                 $order->update_status('on-hold', __('Chase payment failed - ' . $response['x_response_reason_text'], $this->textdomain));
                 wc_add_notice('Payment failed - ' . $response['x_response_reason_text']);
             }
+        }
+
+        function form() {
+            return;
         }
 
         function check_chase_response() {
@@ -254,7 +298,7 @@ function init_chase_class() {
             $x_login = $this->x_login;  //  Take from Payment Page ID in Payment Pages interface
             $transaction_key = $this->transaction_key; // Take from Payment Pages configuration interface
             $x_amount = $order->order_total;
-            $x_currency_code = get_woocommerce_currency(); // Needs to agree with the currency of the payment page
+            $x_currency_code = $this->test_mode ? "USD" : get_woocommerce_currency(); // Needs to agree with the currency of the payment page
             srand(time()); // initialize random generator for x_fp_sequence
             $x_fp_sequence = rand(1000, 100000) + 123456;
             $x_fp_timestamp = time(); // needs to be in UTC. Make sure webserver produces UTC
@@ -276,6 +320,9 @@ function init_chase_class() {
                 'x_invoice_num' => $order->id,
                 'x_receipt_link_url' => add_query_arg(array('wc-api' => 'wc_gateway_chase'),site_url())
             );
+            if (isset($_GET['wc-chase-store-new-payment-method'])) {
+                $chase_args['x_type'] = 'PURCHASE_TOKEN';
+            }
             foreach (WC()->countries->get_address_fields($order->billing_country, 'billing_') as $field_key => $field) {
                 $key = str_replace('billing_', '', $field_key);
                 $chase_args['x_' . $key] = $order->$field_key;
@@ -307,16 +354,16 @@ function init_chase_class() {
         }
 
         public function can_refund_order( $order ) {
-		return $order && get_post_meta($order->id,'_transaction_tag',true)!=="";
-	}
+		    return $order && get_post_meta($order->id,'_transaction_tag',true)!=="";
+	    }
 
         function process_refund($order_id, $amount = null, $reason = '') {
             $order = wc_get_order( $order_id );
 
-		if ( ! $this->can_refund_order( $order ) ) {
-			$this->log( 'Refund Failed: No transaction ID' );
-			return new WP_Error( 'error', __( 'Refund Failed: No transaction ID', 'woocommerce' ) );
-		}
+		    if ( ! $this->can_refund_order( $order ) ) {
+			       $this->log( 'Refund Failed: No transaction ID' );
+			       return new WP_Error( 'error', __( 'Refund Failed: No transaction ID', 'woocommerce' ) );
+		    }
 
              $data = array(
                  'transaction_type' => (get_post_meta($order_id,'_transaction_type',true) == 50) ? 35 : 34,
@@ -351,6 +398,10 @@ function init_chase_class() {
 
         }
 
+        //Override functions for saved_payment_methods
+
+
+
         public function _make_api_call($data, $endpoint = 'transaction') {
             $curl = curl_init();
             $base_url = $this->test_mode ? "https://api.demo.e-xact.com/" : "https://api.e-xact.com/";
@@ -384,9 +435,56 @@ function init_chase_class() {
 
         function process_payment($order_id) {
             $order = new WC_Order($order_id);
+            if ( isset( $_POST['wc-chase-payment-token'] ) && 'new' !== $_POST['wc-chase-payment-token'] ) {
+    			$token_id = wc_clean( $_POST['wc-chase-payment-token'] );
+    			$token    = WC_Payment_Tokens::get( $token_id );
+    			if ( $token->get_user_id() !== get_current_user_id() ) {
+    				wc_add_notice( __( 'Invalid saved method - contact support', 'woocommerce' ), 'error' );
+    				return array(
+                        'result' => 'failure',
+                        'redirect' => WC()->cart->get_checkout_url()
+                    );
+    			}
+                $data = array(
+                    'transaction_type' => 30,
+                    'transaction_tag' => $token->get_token(),
+                    'authorization_num' => $token->get_meta('_chase_authorization_num',true),
+                    'amount' => number_format( $order->get_total(), 2, '.', '' )
+                );
+                $response = $this->_make_api_call($data);
+                //$order->add_order_note( sprintf( __( 'trans failed %s - ORDER ID: %d', 'woocommerce' ), $this->full_response, $order_id) );
+                if ($response['transaction_approved'] == 1) {
+                        if ($response['amount'] == $order->get_total()) {
+                            update_post_meta($order_id,'_transaction_type',$response['transaction_type']);
+                            update_post_meta($order_id,'_transaction_tag',$response['transaction_tag']);
+                            update_post_meta($order_id,'_authorization_num',$response['authorization_num']);
+                            $order->payment_complete($order_id);
+                            $order->add_order_note(__('Order marked as processing, successful stored card payment via Chase', $this->textdomain));
+                            return array(
+                                'result' => 'success',
+                                'redirect' => $this->get_return_url($order)
+                            );
+                        }
+
+
+                }
+                else {
+                    if ((int)$response['error_number'] > 0) {
+                        wc_add_notice("Payment failed - message from provider: " . (string)$response['error_description'],"error");
+                    }
+                    if ($response['transaction_error'] != 0) {
+                        wc_add_notice("Payment failed - error code: " . $response['exact_resp_code'] . " - please <a href='https://hostedcheckout.zendesk.com/hc/en-us/community/posts/114094935414-E-xact-Response-Codes-ETG-Codes-'>click here</a> to find out the meaning of the error code.","error");
+                    }
+                    return array(
+                        'result' => 'fail',
+                        'redirect' => WC()->cart->get_checkout_url()
+                    );
+                }
+    		}
+            $pay_url = (isset($_POST['wc-chase-new-payment-method']) && $_POST['wc-chase-new-payment-method'] == "true") ? add_query_arg('wc-chase-store-new-payment-method','true',$order->get_checkout_payment_url(true)) : $order->get_checkout_payment_url(true);
             return array(
                 'result' => 'success',
-                'redirect' => $order->get_checkout_payment_url(true)
+                'redirect' => $pay_url
             );
         }
 
