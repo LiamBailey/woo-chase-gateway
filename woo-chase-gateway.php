@@ -27,24 +27,6 @@ add_filter('woocommerce_payment_gateways', 'register_chase_method');
 add_action('plugins_loaded', 'init_chase_class');
 
 function init_chase_class() {
-    if ($_SERVER['REMOTE_ADDR'] == "86.144.136.55" && isset($_GET['show_tt_plswiley'])) {
-        echo "SHOW WILEY";
-            global $wpdb;
-            print_r($wpdb->get_results("SELECT pm1.post_id as pid, pm1.meta_value as trans_type, pm2.meta_value as trans_tag FROM {$wpdb->postmeta} as pm1 LEFT JOIN {$wpdb->postmeta} as pm2 ON pm1.post_id = pm2.post_id WHERE pm1.meta_key ='_transaction_type' AND pm2.meta_key = '_transaction_tag' ORDER by pm1.post_id DESC LIMIT 5"));
-            exit;
-            $token    = WC_Payment_Tokens::get( 1 );
-            //print_r($token);
-            print_r($token->get_last4());
-            echo "Got token " . $token->get_token();
-            if ($token->get_meta('_chase_authorization_num',true) === "") {
-                $auth_num = get_post_meta(2907,'_authorization_num',true);
-                $token->update_meta_data('_chase_authorization_num',$auth_num);
-                echo "<p/>Set token auth to " . $auth_num;
-                $token->save();
-                echo " GET META  " . $token->get_meta('_chase_authorization_num',true);
-            }
-            exit;
-    }
     class WC_Gateway_Chase extends WC_Payment_Gateway_CC {
 
         var $notify_url;
